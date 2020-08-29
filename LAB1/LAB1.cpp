@@ -6,9 +6,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-
 using namespace cv;
 using namespace std;
+
+struct Object {
+	int id;
+	int life;
+	int x, y, w, h;
+	int grade;
+	Scalar color;
+	bool isCount;
+	Point center;
+	vector<Rect> bound;
+	vector<Point> tjOrigin;
+	vector<Point> tjPredict;
+};
+vector<Object> objs;
+
+
 Mat erosion_dst, dilation_dst;
 Mat src, src_gray, dst;
 Mat grad;
@@ -28,6 +43,9 @@ int thresh = 100;
 int max_thresh = 255;
 RNG rng(12345);
 
+int	objIdx =-1;
+int delCount = 0;
+
 int erosion_elem = 0;
 int erosion_size = 0;
 int dilation_elem = 0;
@@ -39,6 +57,17 @@ int const max_kernel_size = 40;
 void Erosion(int, void*);
 void Dilation(int, void*);
 void thresh_callback(int, void*);
+
+void RemoveLife(int i);
+void IncreaseLife(int i);
+void Release(void);
+void AddExistObject(int objIdx, Rect boundRect);
+void AddNewObject(Rect boundRect, int i, Scalar color);
+void UpdateObject(Rect bound, int i);
+void UpdateObjectLife();
+bool isZeroLife(int i);
+int ExistObject(vector<Rect> bound);
+double CalDistance(Rect boundRect, Object objs, int i);
 
 int main(int argc, char** argv)
 {
@@ -106,12 +135,12 @@ int main(int argc, char** argv)
 
 
 		/// Create Erosion Trackbar
-		createTrackbar("Element:\n 0: Rect \n 1: Cross \n 2: Ellipse", "Erosion Demo", &erosion_elem, max_elem, Erosion);
-		createTrackbar("Kernel size:\n 2n +1", "Erosion Demo", &erosion_size, max_kernel_size, Erosion);
+		//createTrackbar("Element:\n 0: Rect \n 1: Cross \n 2: Ellipse", "Erosion Demo", &erosion_elem, max_elem, Erosion);
+		//createTrackbar("Kernel size:\n 2n +1", "Erosion Demo", &erosion_size, max_kernel_size, Erosion);
 
 		/// Create Dilation Trackbar
-		createTrackbar("Element:\n 0: Rect \n 1: Cross \n 2: Ellipse", "Dilation Demo", &dilation_elem, max_elem, Dilation);
-		createTrackbar("Kernel size:\n 2n +1", "Dilation Demo", &dilation_size, max_kernel_size, Dilation);
+		//createTrackbar("Element:\n 0: Rect \n 1: Cross \n 2: Ellipse", "Dilation Demo", &dilation_elem, max_elem, Dilation);
+		//createTrackbar("Kernel size:\n 2n +1", "Dilation Demo", &dilation_size, max_kernel_size, Dilation);
 
 		/// Default start
 		Dilation(0, 0);
@@ -152,18 +181,159 @@ void thresh_callback(int, void*)
 
 	/// Draw polygonal contour + bonding rects + circles
 	Mat drawing = Mat::zeros(threshold_output.size(), CV_8UC3);
+
 	for (int i = 0; i < contours.size(); i++)
 	{
 		Scalar color = Scalar(rng.uniform(0, 255), rng.uniform(0, 255), rng.uniform(0, 255));
 		drawContours(drawing, contours_poly, i, color, 1, 8, vector<Vec4i>(), 0, Point());
-		rectangle(frameorg, boundRect[i].tl(), boundRect[i].br(), color, 2, 8, 0);
+		//rectangle(frameorg, boundRect[i].tl(), boundRect[i].br(), color, 2, 8, 0);
 		circle(drawing, center[i], (int)radius[i], color, 2, 8, 0);
 	}
 
+	/////// AJ mark //////
+
+	cout << objs.size();
+	cout << "    ";
+
+	for (int i = 0; i < boundRect.size(); i++) {
+		Scalar color = Scalar(rng.uniform(0, 255), rng.uniform(0, 255), rng.uniform(0, 255));
+		objIdx = ExistObject(boundRect);
+
+		if(objs.size() == 0)
+			AddNewObject(boundRect[i], i, color);
+
+		else if (objIdx == -1) {  //not exist
+			//cout << "  NewObj";
+			AddNewObject(boundRect[i], i, color);
+		}
+		else { //exist
+			//cout << "update"<< i;
+			UpdateObject(boundRect[i], i);
+			//cout << "End";
+		}
+
+		UpdateObjectLife();
+
+		
+
+	}
+
+	for (int i = 0; i < objs.size(); i++)
+		{
+			rectangle(frameorg, objs[i].bound[objs[i].bound.size()-1].tl(), objs[i].bound[objs[i].bound.size() - 1].br(), objs[i].color, 2, 8, 0);
+		}
 	/// Show in a window
 	namedWindow("Contours", WINDOW_AUTOSIZE);
 	imshow("Contours", frameorg);
 }
+
+
+/*
+void AddExistObject(int objIdx, Rect boundRect) {
+	UpdateObjectLife();
+}
+*/
+
+void AddNewObject(Rect boundRect, int i, Scalar color) {
+	Object obj;
+	Point center;
+	obj.color = color;
+	obj.life = 2;
+	//obj.center.x = boundRect.x;
+	//obj.center.y = boundRect.y;
+	obj.bound.push_back(boundRect);
+
+	objs.push_back(obj);
+	//cout << boundRect.x;
+	//cout << "  ";
+	//cout << "DebugAdd";
+	//cout << objs.size();
+
+	//if (objs.size() > 20000) objs.id = 0;
+	//UpdateObjectLife();
+
+}
+
+
+void UpdateObjectLife() {
+	for (int i = 0; i < objs.size(); i++) {
+		//objs.erase(std::remove_if(objs.begin(), objs.end(),isZeroLife(i)),objs.end());
+		if (isZeroLife(i)) {
+			//cout << "remove:" << objs.size();
+			objs.erase(objs.begin()+i);
+			//delCount++;
+		}
+		else
+		//cout << "  begore : ";
+		//cout << objs[i].life;
+			RemoveLife(i);
+		//cout << " after :";
+		//cout << objs[i].life;
+	}
+}
+
+bool isZeroLife(int i) {
+	if (objs[i].life <= 0)
+		return true;
+	return false;
+}
+void RemoveLife(int i)
+{
+	objs[i].life--;
+}
+
+void IncreaseLife(int i)
+{
+	objs[i].life = 2;
+}
+
+
+
+void UpdateObject(Rect bound, int i) {
+	//cout << delCount;
+	objs[objs.size()-1].bound.push_back(bound);
+	IncreaseLife(objs.size() - 1);
+	//objs[i].tjOrigin.push_back(Point(bound.x, bound.y));
+	//if ((int)objs[i].tjOrigin.size() > 5)
+		//objs[i].tjOrigin.erase(objs[i].tjOrigin.begin(), objs[i].tjOrigin.begin() + 1);
+	// IncreaseLife(i);
+}
+
+
+
+
+
+int ExistObject(vector<Rect> bound) {
+	double minDist = 10000, dist;
+	
+
+	for (int i = 0; i < objs.size(); i++) {
+		//cout << "DebugExist";
+		dist = CalDistance(bound[i], objs[i], i);
+		if (dist < minDist) {
+			//cout << "Debug   ";
+			minDist = dist;
+			objIdx = i;
+		}
+		
+		if (minDist > 380) {
+			//cout << "    NewObj";
+			//cout << objs.size();
+			objIdx = -1;
+		}
+		//cout << "   mindist:";
+		//cout << "mindist :"<< minDist;
+		return objIdx;
+	}
+}
+
+
+double CalDistance(Rect boundRect, Object objs, int i) {
+	return sqrt(pow(boundRect.x - objs.bound[i].x, 2) + pow(boundRect.y - objs.bound[i].y, 2));
+}
+
+
+
 
 /**  @function Erosion  */
 void Erosion(int, void*)
@@ -197,3 +367,6 @@ void Dilation(int, void*)
 	erode(dilation_dst, dilation_dst, elementErosion);
 	//imshow("Dilation Demo", dilation_dst);
 }
+
+
+
